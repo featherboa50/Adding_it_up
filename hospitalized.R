@@ -16,6 +16,7 @@ if(!require(MLmetrics)) install.packages("MLmetrics", repos = "https://cran.rstu
 if(!require(GGally)) install.packages("GGally", repos = "https://cran.rstudio.com/")
 if(!require(ggbiplot)) install.packages("ggbiplot", repos = "https://cran.rstudio.com/")
 if(!require(pls)) install.packages("pls", repos = "https://cran.rstudio.com/")
+if(!require(gbm)) install.packages("gbm", repos = "https://cran.rstudio.com/")
 
 
 
@@ -29,7 +30,7 @@ library(MLmetrics) #LogLoss/Cross-Entropy Loss
 library(GGally)
 library(ggbiplot)
 library(pls)
-
+library(gbm)
 
 #color blind friendly colors
 cb_cols <- 
@@ -191,8 +192,7 @@ LogLoss(predict(fit,test), test$death)
 
 # graident boosted method
 # significantly worse
-if(!require(gbm)) install.packages("gbm", repos = "https://cran.rstudio.com/")
-library(gbm)
+
 
 lambdas <- seq(2, 10)
 trees <- sapply(lambdas, function(lambda){
