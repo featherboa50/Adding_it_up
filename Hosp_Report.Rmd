@@ -1,0 +1,514 @@
+---
+title: "Hospital Report"
+author: "Ariel Cooper"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "https://cran.rstudio.com/")
+if(!require(Hmisc)) install.packages("Hmisc", repos = "https://cran.rstudio.com/")
+if(!require(kamila)) install.packages("kamila", repos = "https://cran.rstudio.com/")
+if(!require(caret)) install.packages("caret", repos = "https://cran.rstudio.com/")
+if(!require(recipes)) install.packages("recipes", repos = "https://cran.rstudio.com/")
+if(!require(MLmetrics)) install.packages("MLmetrics", repos = "https://cran.rstudio.com/")
+if(!require(GGally)) install.packages("GGally", repos = "https://cran.rstudio.com/")
+if(!require(ggbiplot)) install.packages("ggbiplot", repos = "https://cran.rstudio.com/")
+if(!require(pls)) install.packages("pls", repos = "https://cran.rstudio.com/")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "https://cran.rstudio.com/")
+if(!require(gbm)) install.packages("gbm", repos = "https://cran.rstudio.com/")
+if(!require(rpart)) install.packages("rpart", repos = "https://cran.rstudio.com/")
+
+
+
+#library(readr)
+library(tidyverse)
+library(Hmisc) # data set is available through this package
+library(kamila)
+library(caret)
+library(recipes)
+library(MLmetrics) #LogLoss/Cross-Entropy Loss
+library(GGally)
+library(ggbiplot)
+library(pls)
+library(kableExtra)
+library(scales)
+library(gbm)
+library(rpart)
+
+
+#color blind friendly colors
+cb_cols <- 
+  c("#999999", "#E69F00", "#56B4E9", "#009E73", 
+    "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+```{r data_setup, echo = FALSE, message=FALSE, warning=FALSE}
+getHdata(support2)
+#remove fields that are findings from previous models and those deceased before discharge 
+support <- data.frame(support2) %>% 
+  select(-aps, -sps, -surv2m, -surv6m, -prg2m, -prg6m, -dnr, -dnrday) %>%
+  filter(hospdead == 0)
+
+# Final hold-out test set will be 10% of patient's data
+set.seed(365, sample.kind="Rounding") # if using R 3.6 or later
+# set.seed(365) # if using R 3.5 or earlier
+test_index <- createDataPartition(y = support$death, times = 1, p = 0.1, list = FALSE)
+main <- support[-test_index,]
+final <- support[test_index,]
+
+#Clears the labels from the data frame, since it was causing issues with ggplot
+clear.labels <- function(x) {
+  if(is.list(x)) {
+    for(i in seq_along(x)) {
+      class(x[[i]]) <- setdiff(class(x[[i]]), 'labelled') 
+      attr(x[[i]],"label") <- NULL
+    } 
+  } else {
+    class(x) <- setdiff(class(x), "labelled")
+    attr(x, "label") <- NULL
+  }
+  return(x)
+}
+
+main <- clear.labels(main)
+```
+
+## Background
+
+In 1995 the \_\_\_ group completed a study to help improve the predicted prognosis of terminally ill patients (SORCE). The study was run at 5 different hospitals around the United States. Participants were chosen by having at least 1 of 9 terminal diseases and had less than 50% predicted survival rate (determined by other \_\_\_\_\_). It was completed in two phases spanning several years. In phase 1, 1989-1991, \_\_\_\_ participants were selected. In phase 2, 1992-1995, there were \_\_\_ participants. The data collection methods were near identical. For this project I am narrowing the scope to predicting the survival rate after discharge from the hospital. This could be used to see what factors affect the patient long term that could be improved, and allow for better planning for end of life care.
+
+##### RMSE and BCE what is it and how it is calculated?
+
+When trying to calculate how well an algorithm is performing we need some kind of metric to base it off of. Is just guessing randomly better than your carefully crafted code? There are many ways to create this calculation and it all depends on what you are trying to measure and the data it comes from. For this project we will be ecploring both root mean squared error (RMSE) and binary cross entropy(BCE).
+
+This formula is calculating the average distance from predicted values to the actual value. For the most accurate prediction, we want the RMSE to be as low as possible since it is indicating our predicted values are not far from the actual. (Bobbitt, 2021)
+
+$$RMSE = \sqrt{\frac{1}{N}\sum_{u,i}(\hat{y}_{u,i}-y_{u,i})^2}$$
+
+-   $N$ is the sample size
+
+-   $u,i$ refers to the indices, $u$ and $i$ could represent any variable we are using to calculate the prediction
+
+-   $\hat{y}_{u,i}$ is the predicted survival rate for a patient, given for example their sex $u$ and number of comorbidities $i$
+
+-   ${y}_{u,i}$ is the actual survival rate for the patient given $u$ and $i$
+
+-   $\sum_{u,i}$ is the sum of all results over all patient's sex and comorbidities
+
+The second method that will be explored is BCE. The advantages for BCE in this report is that we are looking for a result that is one of two categories, death or survived.
+
+"This function quantifies the difference between the actual class labels and the predicted probabilities of the classes. The binary loss function is formulated to provide a high penalty for a prediction far from the actual label."(Parti)
+
+$$
+BCE = -\frac{1}{N}\sum_{i=1}^N[y_{i}*log(\hat{y}_{i} + (1-y_{i})*log(1-\hat{y}_{i})]
+$$
+
+-   *N* is the sample size
+
+-   $y_{i}$ the true label for the $i$-th sample.
+
+-   $\hat{y}_{i}$ is the predicted probability for the $i$-th sample.
+
+(SOURCE). This investigation will be looking at the results of whether or not a patient survived, a yes or no result. BCE is measuring how suprising?????
+
+## Exploring the Data
+
+There is a variety of different types of data collected about the patients.
+
+```{r, echo = FALSE}
+variable_info <- data.frame(Variable = NULL, Information = NULL, Class = NULL)
+for(i in 1:39){
+  if (i == 21) {
+    description = "Paitent has cancer"
+  }else if(is.null(attr(final[[i]],"label"))){
+    description <- names(final[i])
+  }else{
+    description <- attr(final[[i]],"label")
+  }
+  variable_info <- bind_rows(variable_info,
+          data_frame(Variable = names(final[i]), 
+                     Information = description,
+                     Class = class(main[[i]])))
+}
+variable_info %>% kbl() %>%
+  kable_styling()
+
+
+```
+
+There are many fields with missing data. Missing data will affect results later on, whether by scewing the results or causing calculations to fail all together. Per the recommendation of the data source, there are some baseline values that can be used with the normal result of the type of data (Support). Additionally when the race of the patient is unknown, the value of "other" was set. And it was assumed that all patients had completed up to high school education if it was not recorded and the value was set to 12.
+
+| Baseline Variable      | Normal Value  |
+|------------------------|---------------|
+| Serum albumin          | 3.5           |
+| PaO2/FiO2 ratio (pafi) | 333.3         |
+| Bilirubin              | 1.01          |
+| Creatinine             | 1.01          |
+| BUN                    | 6.51          |
+| White blood count      | 9 (thousands) |
+| Urine output           | 2502          |
+
+: table X: hfdsf
+
+```{r, echo = false}
+main <- main %>% replace_na(list(alb = 3.5, pafi = 333.3,
+                                 bili = 1.01, crea = 1.01,
+                                 bun = 6.51, wblc = 9,
+                                 urine = 2502,
+                                 race = "other",
+                                 edu = 12))
+```
+
+The variables that have less than 25% of the values missing will be kept and values imputed later on using the average value. There is a statistically significant amount of data available in the dataset so it can be used to aid in the predictions.
+
+```{r, echo = false}
+# checking which columns have NA and how many
+x <- colSums(is.na(main))/nrow(main)
+# less than 25% missing
+print("Percentage of data missing")
+scales::percent(x[which(x < .25 & x > 0)])
+
+```
+
+However, values that are missing more than 25% of the data will be dropped. They are unlikely to be significant contributors to the final prediction. It is unlikely any value imputed to replace the missing data, would be a match to the actual results. Thus it is more likely to introduce more errors and create a larger bias to our predictions. It would be more beneficial to ignore these variables instead. The following are variables that meet this criteria.
+
+```{r, echo = false}
+# more than 25% missing values
+print("Percentage of data missing")
+scales::percent(x[which(x >= .25)])
+```
+
+```{r impute, echo = false}
+#use mean for NA, numeric
+main <- main %>% mutate_at(vars("charges", "totcst", "avtisst"),
+                                   ~ifelse(is.na(.x), mean(.x, na.rm = TRUE), .x))
+#mode for catagorical
+main <- main %>% mutate_at(vars("sfdm2"),
+                                   ~ifelse(is.na(.x), mode(.x), .x))
+```
+
+Now with the all the fields of data set filled once other the variable d.time will be excluded as it is the time of death is not a predictor of the survival rate but a result of it. We can see the correlation matrix of just the ones pertaining to death here. Indicating that age is one of the most highly correlated to death.
+
+```{r, echo=false, warning= false}
+# check correlation in numeric data
+sort(abs(cor(main %>% select(!c("income", "totmcst", "ph", "glucose", "adlp", "adls", "d.time")) %>% select(where(is.numeric)), use = "complete.obs"))[,2], decreasing=TRUE)
+
+```
+
+Looking at age we can see an increase in the ratio of deaths, maxing out around the age of 65.
+
+```{r, echo = false}
+#MAKE PRETTIER
+main %>%  ggplot(aes(age, fill = (death == 1))) + geom_histogram(binwidth = 10)
+```
+
+When accounting for the sex of the patient we can see that an increased average age for both sexes.
+
+```{r, echo = false}
+main %>% group_by(sex, death) %>% ggplot(aes(death == 1,age)) + geom_boxplot(aes(color = sex))
+```
+
+Next looking at the patient's race, we can see overall the average age is higher for those who passed away. With those who identified as white having an overall higher age, and those who were Hispanic with the lowest averages (table X&Y). Hispanics were the only ones to have a more patients that survived than those that had died. Some factors to condiser with these results are that there were significantly more patients in the white category verses any other. Also the mean age of Hispanic patients was significantly lower than the age with the highest ratio of deaths.
+
+```{r, echo = false, message= false}
+#exploring race as a factor
+main %>% group_by(race, death) %>% summarise(age = mean(age), count = n()) %>% arrange(desc(death))
+
+```
+
+```{r, echo = false, message= false}
+main %>% group_by(race, death) %>% summarise(age = mean(age)) %>% 
+  ggplot(aes(race,age, fill = death == 1)) + 
+  geom_bar(position="dodge", stat="identity") 
+
+```
+
+```{r, echo = false, warning= false}
+main %>% group_by(race, death)  %>% 
+  ggplot(aes(race, fill = death == 1)) + 
+  geom_histogram(stat="count", position="dodge") 
+```
+
+Since the one of the goals of examining this data is to see what factors could help improve either survival rates or end of life care, it is worth examining what happens when insurance covers more of the costs for patients. Overall there is a trend with better insurance coverage, there is a higher rate of surviving more than 180 days from the start of the study.
+
+```{r, echo = false, warning= false}
+# Is there is a large difference in survival rates when insurance covers more of the cost
+main %>% 
+  ggplot(aes(death == 1,totcst)) + 
+  geom_boxplot() + scale_y_log10()
+```
+
+A patient can have more than one disease at the time of the study, such as having cancer and diabetes. These are recorded as comorbitites. As expected, the higher the number of comorbidities shows a lower survival rate. Only when there are no secondary diseases present does the survival rate go over 50%.
+
+```{r}
+# The number of simultaneous diseases (or comorbidities)
+main %>% ggplot(aes(num.co,  fill = death == 1)) + 
+  geom_histogram(stat="count", position="dodge") 
+```
+
+Examining further the dzgroup and dzclass are dependent on each other. Dzgroup is a group of diseases while dzclass is a more granular exact disease. Since these two are highly correlated to each other causing mutli-collinearity which can weight their values more than is needed. For sake of simplicity dzclass will be dropped.
+
+```{r index, echo= FALSE}
+# Possible causes columns based on too many missing values or is a dependent var
+modeling_index = sort(c(c(1,5,9,10,12,18,seq(22,31),34,35), c(3,7,17,19,20,21)))
+
+```
+
+## Pre-processing
+
+```{r test-set, echo=FALSE}
+# create a testing and training set
+set.seed(713)
+test_index <- createDataPartition(y = main$death, times = 1, p = 0.2, list = FALSE)
+train <- main[-test_index,]
+test <- main[test_index,]
+```
+
+In order to decide the best method for creating our predictions, the data was split into 2 sets. One for a final holdout that our final predictions will be tested on. All exploration of the data was done on the main set. The final holdout will be used like data we do not know the results of in real life.
+
+Then for creating the predictions, the main data set will be split again into a test set and a training set. The training set contains 80% of the data and will be used to create the predictions. The test set will be used to test the different methods and see which ones optimize the RMSE and BCE. Then the final method will be picked and re-run using the entirety of the main dataset. From that our final RMSE and BCE can be found with the predictions on the final holdout data.
+
+## Methods tried
+
+#### Guessing
+
+The most basic method used is to guess the same survival rate, regardless of any other factors. The best fit for this is to take an average of the deaths in the data. We'll call this variable $\mu$. Putting this in a general formula, it comes out to our prediction $\hat{y}$ for any given rating equaling $\mu$.
+
+$\mu = 0.5698105$
+
+The formula being:
+
+$\hat{y} = \mu$
+
+```{r, echo = FALSE, message = FALSE}
+# just using mean
+mu <- train %>% summarise(x = mean(death)) %>% pull(x)
+
+accuracy_results <- data.frame(Model = "Average", RMSE = RMSE(mu,test$death), BCE = LogLoss(mu, test$death))
+```
+
+```{r, echo = FALSE}
+accuracy_results %>% kbl() %>%
+  kable_styling()
+```
+
+#### Linear Regression
+
+Linear regression is a method that assumes a linear relationship between the prediction and all the variables. It finds the best line of fit through through the data to minimize error.
+
+$\hat{y} = B_0 + B_1x_1 + ...+B_nx_n+\varepsilon$
+
+$B_0$ is the intercept
+
+$\varepsilon$ is some unobserved random variable
+
+$x_1$ to $x_n$ is the independent variables we are using to predict $y$. For example sex, age, comorbitities, etc.
+
+$B_1$ to $B_n$ are the regression coefficients for each variable from the 1st to the nth variable. How much we expect $\hat{y}$ when $x$ increases
+
+```{r lm, echo = false}
+#Linear Regression
+relevant_data <- train[,c(2,modeling_index)]
+fit <- lm(death ~ ., data = relevant_data)
+accuracy_results <- bind_rows(accuracy_results, data.frame(Model = "Linear Regression", RMSE = RMSE(predict(fit,test),test$death), BCE = LogLoss(predict(fit,test), test$death)))
+
+
+```
+
+```{r, echo = false}
+accuracy_results%>%  filter(Model == "Linear Regression") %>% kbl() %>%
+  kable_styling() 
+```
+
+#### Gradient Boosting
+
+Gradient boosting is a method that combines the results of several weaker models and combines the results into an ensemble to create a stronger algorithm (AlmaBetter). It is made up of N trees and each iteration should improve upon the last.
+
+[![Fig X: Example of a boosted method using previous runs to improve](images/clipboard-3370986260.png)](https://www.almabetter.com/bytes/tutorials/data-science/gradient-boosting)
+
+This particular implementation is using the GBM (generalized boosted models) package in R. It combines many different methods and is an extension of a popular boosting method called AdaBoost. To help further tune this model, a variety number of trees was used to find the best fit.
+
+```{r, message=false, warning = false}
+#find the ideal number of trees
+lambdas <- seq(2, 10)
+trees <- sapply(lambdas, function(lambda){
+  fit <- gbm(death ~ ., data = relevant_data, cv.folds = 2, 
+             n.trees = lambda,
+             distribution = "bernoulli")
+  LogLoss(predict(fit,test),test$death)
+})
+lambda_u <- lambdas[which.min(trees)]
+
+#apply the one that min. BCE
+fit <- gbm(death ~ ., data = relevant_data, cv.folds = 5, n.trees = lambda_u)
+accuracy_results <- bind_rows(accuracy_results, data.frame(Model = "Gradient Boosting", RMSE = RMSE(predict(fit,test),test$death), BCE = LogLoss(predict(fit,test), test$death)))
+```
+
+```{r, echo = false}
+qplot(lambdas, trees, geom = "line")
+```
+
+```{r, echo = false}
+accuracy_results%>%  filter(Model == "Gradient Boosting") %>% kbl() %>%
+  kable_styling() 
+```
+
+#### PCA
+
+When working with data sets that have a lot of variables it can be hard to see how they all fit together. How does a change in one variable affect the others? Principal component analysis(PCA) seeks to answer this (Dharani). PCA is not an algorithm to create predictions from, but instead a way to preprocess the data into fewer variables. For example if analyzing the quality of a piece of furniture you may categorize first with samples having qualities of greater variance, such as missing parts, large cracks, or rips. Then also look for things of lower variance in the quality, such as color, fabric, or extra accessories. The properties that have the greater affect on the quality would be grouped in the first principle component, the lower variance would be grouped in the second principle component, and so on.
+
+First looking overall, the categorical data is removed as it cannot be accounted for with PCA without further pre-processing. The method used here to calculate the principle componens will by default create as many components as variables. Each variable is weighted differently for each component. A scree plot is typically used to show how much each component is affecting the whole. So we can see in Figure X, components 1-3 are contributing the most effect.
+
+```{r, echo = false}
+#calculate principal components
+PCA_data <- relevant_data %>% mutate(death_info = paste(row_number(),death))
+row.names(PCA_data) =   PCA_data$death_info
+# remove categorical data
+results <- prcomp(PCA_data[,-c(3,5,9,13,26)], scale = TRUE)
+```
+
+```{r scree, echo = false}
+#scree plot
+var_explained <- results$sdev^2/sum(results$sdev^2)
+qplot(c(1:21), var_explained) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot") +
+  ylim(0, 0.15)
+```
+
+However our goal is not to find the change over the whole but instead are focusing on how the principle components best change the death variable. FIG Y shows the components sorted by their effect on just death.
+
+Now when plotting using PCA 1 and 2 its hard to get a clear picture on how to divide the data (FIG W). But if instead use PCA 10(pc10) and 7 which showed the greatest effect on the survival rate there is a clearly defined separation(FIG Z).
+
+```{r}
+# top results in relation to death
+sort(abs(results$rotation[1,]), decreasing = TRUE)
+
+plotting_results <- results$x %>% as.data.frame %>% rownames_to_column("death_info") %>%
+  separate("death_info",c("row","death")) 
+```
+
+```{r}
+# overall plot with the components that explain overall variance
+plotting_results %>%
+  ggplot(aes(PC1, PC2)) + geom_point(aes(color = death, alpha = 0.2))
+```
+
+```{r}
+# top 2 components that relate to death instead
+plotting_results %>%
+  ggplot(aes(PC10, PC7)) + geom_point(aes(color = death, alpha = 0.2))
+```
+
+Digging down into pc10, the top 4 variable that are included in it are the serum sodium and bilirubin levels (sod/bili), age, and how long they had already been in the hospital when admitted into the study(hday). These seem like reasonable factors that would affect the survival rate.
+
+```{r}
+
+# ordering features based on importance for overall top and death top
+y<-data.frame(results$rotation) %>% mutate(feature = row.names(.))
+#y %>% ggplot(aes(PC1, reorder(feature, PC1))) + geom_point()
+y %>% ggplot(aes(PC10, reorder(feature, PC10))) + geom_point()
+
+```
+
+Understanding the data better, a principle component regression model was used with cross validation.
+
+```{r}
+#make this example reproducible
+set.seed(1)
+
+#fit PCR model
+model <- pcr(death~., data=relevant_data, scale=TRUE, validation="CV")
+#summary(model)
+
+#visualize cross-validation plots
+validationplot(model)
+```
+
+```{r, echo = false}
+pcr_pred <- predict(model, test, ncomp=30)
+
+accuracy_results <- bind_rows(accuracy_results, data.frame(Model = "Principle Component", RMSE = RMSE(pcr_pred,test$death), BCE = LogLoss(pcr_pred, test$death)))
+```
+
+```{r, echo = false}
+accuracy_results%>%  filter(Model == "Principle Component") %>% kbl() %>%
+  kable_styling() 
+```
+
+#### Tree
+
+```{r}
+# Tree method
+# Improvement on binary but loss on RMSE
+# Min 5 observations per node
+# 10 cross validations
+
+fit <- rpart(death ~ ., data = select(train, -c(d.time, sfdm2, hospdead)), 
+             control = rpart.control( minsplit = 5, xval = 10))
+plot(fit, margin = 0.1)
+text(fit, cex = 0.75)
+
+
+```
+
+```{r}
+accuracy_results <- bind_rows(accuracy_results, data.frame(Model = "Tree", RMSE = RMSE(predict(fit,test),test$death), BCE = LogLoss(predict(fit,test), test$death)))
+```
+
+```{r, echo = false}
+accuracy_results%>%  filter(Model == "Tree") %>% kbl() %>%
+  kable_styling() 
+```
+
+#### 
+
+```{r final-countdown, echo = false}
+
+
+final_results <- data.frame(Method = "", RMSE = "", BCE = "")
+```
+
+## Conclusion
+
+Based on both the BCE and RMSEs of all the tests \_\_\_\_\_ was the best method.
+
+```{r, echo = FALSE}
+accuracy_results %>% kbl() %>%
+  kable_styling()
+
+```
+
+Re-running the training with the same method on the entirety of the main dataset resulted in the final results:
+
+```{r, echo = FALSE}
+final_results %>% kbl() %>%
+  kable_styling()
+```
+
+#### WHAT CAN WE IMPROVE ON
+
+Better handling of catagorical data, possibly one-hot encoding. Multicolinearity handling such as with dzgroup and dzclass.
+
+## References
+
+# Works Cited
+
+Bobbitt, Zach. “How to Interpret Root Mean Square Error (RMSE).” *Statology*, 10 May 2021, www.statology.org/how-to-interpret-rmse/. Accessed 1 Aug. 2024.
+
+Dharani. “Step-By-Step Guide to Principal Component Analysis with Example.” *Www.turing.com*, www.turing.com/kb/guide-to-principal-component-analysis. Accessed 1 Aug. 2024.
+
+“Gradient Boosting Algorithm for Machine Learning.” *AlmaBetter*, www.almabetter.com/bytes/tutorials/data-science/gradient-boosting.
+
+Knaus, William A. “The SUPPORT Prognostic Model: Objective Estimates of Survival for Seriously Ill Hospitalized Adults.” *Annals of Internal Medicine*, vol. 122, no. 3, Feb. 1995, p. 191, <https://doi.org/10.7326/0003-4819-122-3-199502010-00007.> Accessed 20 June 2020.
+
+Parti, Ayush. “Cross Entropy Loss Function in Machine Learning.” *Pareto.ai*, 10 May 2024, pareto.ai/blog/cross-entropy-loss-function. Accessed 1 Aug. 2024.
+
+“SUPPORT.” *Hbiostat.org*, hbiostat.org/data/repo/supportdesc. Accessed 1 Aug. 2024..
+
+Data obtained from <http://hbiostat.org/data> courtesy of the Vanderbilt University Department of Biostatistics.

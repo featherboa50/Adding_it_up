@@ -243,16 +243,16 @@ plotting_results %>%
   ggplot(aes(PC1, PC2)) + geom_point(aes(color = death, alpha = 0.2))
 # top 2 components that relate to death instead
 plotting_results %>%
-  ggplot(aes(PC11, PC9)) + geom_point(aes(color = death, alpha = 0.2))
+  ggplot(aes(PC10, PC7)) + geom_point(aes(color = death, alpha = 0.2))
 
 # ordering features based on importance for overall top and death top
 y<-data.frame(results$rotation) %>% mutate(feature = row.names(.))
 y %>% ggplot(aes(PC1, reorder(feature, PC1))) + geom_point()
-y %>% ggplot(aes(PC11, reorder(feature, PC11))) + geom_point()
+y %>% ggplot(aes(PC10, reorder(feature, PC7))) + geom_point()
 
 
 #biplot with top 2 
-ggbiplot(results, choices = c(11,9), obs.scale = 1, var.scale = 1, 
+ggbiplot(results, choices = c(10,7), obs.scale = 1, var.scale = 1, 
          groups = as.factor(relevant_data$death)) + 
   scale_colour_manual(values = c("0" = cb_cols[1], "1" = cb_cols[2])) +
   theme(legend.direction = 'horizontal', legend.position = 'top') + 
@@ -260,7 +260,7 @@ ggbiplot(results, choices = c(11,9), obs.scale = 1, var.scale = 1,
 
 
 
-y %>% ggplot(aes(PC11, PC9, label = feature)) +
+y %>% ggplot(aes(PC10, PC7, label = feature)) +
   geom_text()
 
 
@@ -298,99 +298,4 @@ RMSE(predict(fit,test),test$death)
 LogLoss(predict(fit,test), test$death)
 
 
-#----RECIPES
 
-# -1 due death being removed from the indexes when creating recipes
-id_index = sapply(c(4,6,8,11,seq(13,16),32,33,seq(36,39)),function(x){x-1}) 
-
-my_recipe <- recipe(death ~ ., data = train) %>%
-  update_role(all_of(id_index), new_role = "ID")  #sets the title feature to be kept but not used for modeling
-  
-  #  step_dummy(genres, one_hot = TRUE)  #One Hot encoding the genres
-
-my_recipe
-print(summary(my_recipe),n = 40)
-#library(kernlab)
-
-
-#loess method
-# No improvement
-b <- 5
-control <- trainControl(method = "cv", number = b, p = .9)
-train_Loess <- train(my_recipe, train,
-                     method = "gamLoess",
-                     #tuneGrid = data.frame(k = seq(1,60,2)),
-                     trControl = control)
-
-RMSE(predict(train_Loess, test), test$death)
-LogLoss(predict(train_Loess, test), test$death)
-
-# #knn method
-# b <- 5
-# control <- trainControl(method = "cv", number = b, p = .9)
-# train_knn <- train(my_recipe, train,
-#                      method = "knn",
-#                      tuneGrid = data.frame(k = seq(1,60,2)),
-#                      trControl = control)
-# 
-# RMSE(predict(train_Loess, testing), testing$death)
-# LogLoss(predict(train_Loess, test), test$death)
-
-
-
-#-----------------
-
-
- 
- 
- 
- #------------------
- # # Kamila method, ran for 15-30 min on my device and pushed memory limits but is possible
- # # supposed to be good for lots of categorical data (genres) with better performance. 
- # # But it did not beat regularized data above
- set.seed(52)
- kamind <- createDataPartition(main$death, p = 0.7, list = FALSE)
- kamtrain <- main[kamind,]
- kamtest <- main[-kamind,]
- 
- 
- #continous variables (numbers) 
- conInd <- c(1,5,9,10,12,18,seq(22,31),34,35)
- conVars <- kamtrain[,conInd]
- conTest <- kamtest[,conInd]
- 
- #categorical variables
- # (dzgroup and dzclass highly correlated, just using dzgroup)
- catInd <- c(3,7,17,19,20,21)
- #catInd2 <- c(1,2,6) #genre groups in tact
- catVarsFac <- kamtrain[,catInd]
- catVarsFac[] <- lapply(catVarsFac, factor)
-
- #make sure cat variables are factors
- catTestFac <- kamtest[,catInd]
- catTestFac[] <- lapply(catTestFac, factor)
- 
- 
- 
- 
- 
- # KAMILA
- kamRes <- kamila(conVars, catVarsFac, numClust=8, numInit=5)
- kamPred <- classifyKamila(kamRes, list(conTest, catTestFac))
- table(kamtest$death, kamPred)
- 
- RMSE(kamPred,kamtest$death)
- LogLoss(kamtest$death,kamPred)
- 
- # FIGURE OUT HOW TO DO THIS 
- # Plot KAMILA results
- plottingData <- cbind(
-   conVars,
-   catVarsFac,
-   KamilaCluster = factor(kamRes$finalMemb),
-   death = factor(kamtrain$death))
- plottingData$result <- ifelse(
-   plottingData$KamilaCluster == '1', yes='Yes',no='No')
- 
- plottingData %>% ggplot(aes(KamilaCluster, death)) + geom_histogram()
- 
